@@ -1,0 +1,485 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Secure Mesh — Dual Virtual Devices</title>
+  <script src="https://cdn.jsdelivr.net/npm/tweetnacl@1.0.3/nacl-fast.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/tweetnacl-util@0.15.1/nacl-util.min.js"></script>
+  <style>
+    :root {
+      --bg: #0b1220;
+      --panel: #121a2b;
+      --card: #172033;
+      --border: #243047;
+      --text: #e8eef9;
+      --muted: #9aa8c2;
+      --accent: #2dd4bf;
+      --danger: #f87171;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, sans-serif;
+      background: radial-gradient(1200px 600px at 20% -10%, #12304a, var(--bg));
+      color: var(--text);
+      min-height: 100vh;
+    }
+    header {
+      padding: 16px 20px;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+    header h1 { margin: 0; font-size: 18px; color: var(--accent); }
+    header p { margin: 0; color: var(--muted); font-size: 13px; }
+    .grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 12px;
+      padding: 12px;
+      min-height: calc(100vh - 70px);
+    }
+    @media (max-width: 900px) { .grid { grid-template-columns: 1fr; } }
+    .device {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      min-height: 640px;
+    }
+    .device-head {
+      padding: 14px 16px;
+      border-bottom: 1px solid var(--border);
+      background: #0f1728;
+    }
+    .device-head strong { display: block; font-size: 16px; }
+    .device-head span { color: var(--muted); font-size: 12px; font-family: ui-monospace, monospace; }
+    .body { padding: 14px; display: flex; flex-direction: column; gap: 10px; flex: 1; }
+    label { font-size: 12px; color: var(--muted); }
+    input, button, select {
+      width: 100%;
+      border-radius: 10px;
+      border: 1px solid var(--border);
+      background: var(--card);
+      color: var(--text);
+      padding: 10px 12px;
+      font: inherit;
+    }
+    button {
+      background: var(--accent);
+      color: #042f2e;
+      font-weight: 700;
+      border: none;
+      cursor: pointer;
+    }
+    button.secondary { background: transparent; color: var(--text); border: 1px solid var(--border); }
+    button:disabled { opacity: 0.5; cursor: not-allowed; }
+    .row { display: grid; grid-template-columns: 1fr auto; gap: 8px; }
+    .chat {
+      flex: 1;
+      background: #0a1322;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 10px;
+      overflow-y: auto;
+      min-height: 260px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    .bubble {
+      max-width: 80%;
+      padding: 8px 10px;
+      border-radius: 12px;
+      font-size: 14px;
+      line-height: 1.35;
+      white-space: pre-wrap;
+    }
+    .mine { align-self: flex-end; background: #115e59; }
+    .theirs { align-self: flex-start; background: #1f2937; }
+    .meta { font-size: 10px; color: var(--muted); margin-top: 4px; text-align: right; }
+    .status { font-size: 12px; color: var(--muted); min-height: 18px; }
+    .status.err { color: var(--danger); }
+    .status.ok { color: var(--accent); }
+    .friends { display: flex; flex-direction: column; gap: 6px; }
+    .friend {
+      display: flex; justify-content: space-between; align-items: center;
+      background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 8px 10px;
+    }
+    .friend button { width: auto; padding: 6px 10px; font-size: 12px; }
+  </style>
+</head>
+<body>
+  <header>
+    <div>
+      <h1>Secure Mesh Messenger — Dual Virtual Devices</h1>
+      <p>Two browser “phones” talking through your local E2EE relay. No physical device needed.</p>
+    </div>
+    <div class="row" style="width: min(420px, 100%)">
+      <input id="apiBase" value="http://127.0.0.1:8787/api" />
+      <button class="secondary" id="pingBtn" type="button">Ping</button>
+    </div>
+  </header>
+
+  <div class="grid">
+    <section class="device" id="deviceA"></section>
+    <section class="device" id="deviceB"></section>
+  </div>
+
+  <script>
+    const nacl = window.nacl;
+    const util = nacl.util;
+
+    function b64(bytes) { return util.encodeBase64(bytes); }
+    function fromB64(s) { return util.decodeBase64(s); }
+    function utf8(s) { return util.decodeUTF8(s); }
+    function str(bytes) { return util.encodeUTF8(bytes); }
+    function hex(bytes) {
+      return Array.from(bytes).map((x) => x.toString(16).padStart(2, '0')).join('');
+    }
+    function deriveSecureId(publicKeyB64) {
+      const hash = nacl.hash(fromB64(publicKeyB64));
+      return 'smm_' + hex(hash.slice(0, 8));
+    }
+    function createIdentity() {
+      const identity = nacl.box.keyPair();
+      const signing = nacl.sign.keyPair();
+      const identityPublicKey = b64(identity.publicKey);
+      return {
+        secureId: deriveSecureId(identityPublicKey),
+        identity: { publicKey: identityPublicKey, secretKey: b64(identity.secretKey) },
+        signing: { publicKey: b64(signing.publicKey), secretKey: b64(signing.secretKey) },
+      };
+    }
+    function encryptMessage(plaintext, recipientPublicKey, senderSecretKey) {
+      const nonce = nacl.randomBytes(nacl.box.nonceLength);
+      const boxed = nacl.box(utf8(plaintext), nonce, fromB64(recipientPublicKey), fromB64(senderSecretKey));
+      return { ciphertext: b64(boxed), nonce: b64(nonce) };
+    }
+    function decryptMessage(ciphertext, nonce, senderPublicKey, recipientSecretKey) {
+      const opened = nacl.box.open(fromB64(ciphertext), fromB64(nonce), fromB64(senderPublicKey), fromB64(recipientSecretKey));
+      if (!opened) throw new Error('decrypt failed');
+      return str(opened);
+    }
+    function conversationIdFor(a, b) { return [a, b].sort().join(':'); }
+    function uid() { return Math.random().toString(36).slice(2) + Date.now().toString(36); }
+    function signPayload(payload, signingSecretKey) {
+      const sig = nacl.sign.detached(utf8(payload), fromB64(signingSecretKey));
+      return b64(sig);
+    }
+    function registerProofPayload(secureId, identityPublicKey, signingPublicKey) {
+      return 'smm-register:' + secureId + ':' + identityPublicKey + ':' + signingPublicKey;
+    }
+    function loginChallengePayload(secureId, nonce) {
+      return 'smm-login:' + secureId + ':' + nonce;
+    }
+
+    function apiBase() {
+      return document.getElementById('apiBase').value.replace(/\/$/, '');
+    }
+
+    async function api(path, { method = 'GET', token, body } = {}) {
+      const res = await fetch(apiBase() + path, {
+        method,
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { Authorization: 'Bearer ' + token } : {}),
+        },
+        body: body ? JSON.stringify(body) : undefined,
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || ('HTTP ' + res.status));
+      return data;
+    }
+
+    function makeDevice(root, label, defaultUser) {
+      root.innerHTML = `
+        <div class="device-head">
+          <strong>${label}</strong>
+          <span class="idLine">Not registered</span>
+        </div>
+        <div class="body">
+          <label>Username</label>
+          <input class="username" value="${defaultUser}" />
+          <button class="createBtn" type="button">Create identity & register</button>
+          <div class="status"></div>
+
+          <label>Add friend (username or Secure ID)</label>
+          <div class="row">
+            <input class="friendQuery" placeholder="@otheruser or smm_..." />
+            <button class="addFriendBtn secondary" type="button">Add</button>
+          </div>
+
+          <div class="friends requests"></div>
+          <div class="friends list"></div>
+
+          <label>Chat with</label>
+          <select class="peerSelect"><option value="">Select friend</option></select>
+          <div class="chat"></div>
+          <div class="row">
+            <input class="msgInput" placeholder="Encrypted message" />
+            <button class="sendBtn" type="button">Send</button>
+          </div>
+        </div>
+      `;
+
+      const state = {
+        identity: null,
+        token: null,
+        friends: [],
+        messages: {},
+        selectedPeer: null,
+        ws: null,
+      };
+
+      const els = {
+        idLine: root.querySelector('.idLine'),
+        username: root.querySelector('.username'),
+        createBtn: root.querySelector('.createBtn'),
+        status: root.querySelector('.status'),
+        friendQuery: root.querySelector('.friendQuery'),
+        addFriendBtn: root.querySelector('.addFriendBtn'),
+        requests: root.querySelector('.requests'),
+        list: root.querySelector('.list'),
+        peerSelect: root.querySelector('.peerSelect'),
+        chat: root.querySelector('.chat'),
+        msgInput: root.querySelector('.msgInput'),
+        sendBtn: root.querySelector('.sendBtn'),
+      };
+
+      function setStatus(text, kind = '') {
+        els.status.textContent = text || '';
+        els.status.className = 'status' + (kind ? ' ' + kind : '');
+      }
+
+      function renderMessages() {
+        const peer = state.selectedPeer;
+        els.chat.innerHTML = '';
+        if (!peer || !state.identity) return;
+        const conv = conversationIdFor(state.identity.secureId, peer.secureId);
+        const list = state.messages[conv] || [];
+        for (const m of list) {
+          const div = document.createElement('div');
+          div.className = 'bubble ' + (m.mine ? 'mine' : 'theirs');
+          div.innerHTML = `${escapeHtml(m.plaintext)}<div class="meta">${m.mine ? m.status + ' · ' : ''}${new Date(m.createdAt).toLocaleTimeString()}</div>`;
+          els.chat.appendChild(div);
+        }
+        els.chat.scrollTop = els.chat.scrollHeight;
+      }
+
+      function escapeHtml(s) {
+        return String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+      }
+
+      function renderFriends() {
+        els.list.innerHTML = '';
+        els.peerSelect.innerHTML = '<option value="">Select friend</option>';
+        for (const f of state.friends) {
+          const row = document.createElement('div');
+          row.className = 'friend';
+          row.innerHTML = `<div><div>${f.friend.username ? '@' + f.friend.username : f.friend.secureId}</div><div style="color:var(--muted);font-size:11px;font-family:monospace">${f.friend.secureId}</div></div>`;
+          const btn = document.createElement('button');
+          btn.type = 'button';
+          btn.textContent = 'Chat';
+          btn.onclick = () => {
+            state.selectedPeer = f.friend;
+            els.peerSelect.value = f.friend.secureId;
+            renderMessages();
+          };
+          row.appendChild(btn);
+          els.list.appendChild(row);
+
+          const opt = document.createElement('option');
+          opt.value = f.friend.secureId;
+          opt.textContent = f.friend.username ? '@' + f.friend.username : f.friend.secureId;
+          els.peerSelect.appendChild(opt);
+        }
+      }
+
+      async function refreshFriends() {
+        const data = await api('/friends', { token: state.token });
+        state.friends = data.friends;
+        renderFriends();
+        const req = await api('/friends/requests', { token: state.token });
+        els.requests.innerHTML = '';
+        for (const r of req.requests) {
+          const row = document.createElement('div');
+          row.className = 'friend';
+          row.innerHTML = `<div>Request from ${r.from.username ? '@' + r.from.username : r.from.secureId}</div>`;
+          const accept = document.createElement('button');
+          accept.type = 'button';
+          accept.textContent = 'Accept';
+          accept.onclick = async () => {
+            await api('/friends/respond', { method: 'POST', token: state.token, body: { requestId: r.id, accept: true } });
+            await refreshFriends();
+            setStatus('Friend accepted', 'ok');
+          };
+          row.appendChild(accept);
+          els.requests.appendChild(row);
+        }
+      }
+
+      function connectWs() {
+        if (state.ws) try { state.ws.close(); } catch {}
+        const wsUrl = apiBase().replace(/^http/, 'ws').replace(/\/api$/, '') + '/ws';
+        const ws = new WebSocket(wsUrl);
+        state.ws = ws;
+        ws.onopen = () => {
+          ws.send(JSON.stringify({ type: 'auth', secureId: state.identity.secureId, token: state.token }));
+        };
+        ws.onmessage = async (ev) => {
+          const msg = JSON.parse(ev.data);
+          if (msg.type === 'friend.request') {
+            await refreshFriends();
+            setStatus('New friend request', 'ok');
+          }
+          if (msg.type === 'message') {
+            await ingest(msg.envelope);
+          }
+          if (msg.type === 'message.status') {
+            for (const key of Object.keys(state.messages)) {
+              state.messages[key] = state.messages[key].map((m) => m.id === msg.messageId ? { ...m, status: msg.status } : m);
+            }
+            renderMessages();
+          }
+        };
+      }
+
+      async function ingest(envelope) {
+        const sender = state.friends.find((f) => f.friend.secureId === envelope.senderSecureId)?.friend;
+        if (!sender) {
+          await refreshFriends();
+        }
+        const peer = state.friends.find((f) => f.friend.secureId === envelope.senderSecureId)?.friend;
+        if (!peer) return;
+        let plaintext = '[unable to decrypt]';
+        try {
+          plaintext = decryptMessage(envelope.ciphertext, envelope.nonce, peer.identityPublicKey, state.identity.identity.secretKey);
+        } catch {}
+        const conv = envelope.conversationId;
+        const list = state.messages[conv] || [];
+        if (list.some((m) => m.id === envelope.id)) return;
+        state.messages[conv] = [...list, {
+          id: envelope.id,
+          plaintext,
+          createdAt: envelope.createdAt,
+          status: 'delivered',
+          mine: false,
+        }];
+        try { await api('/messages/ack', { method: 'POST', token: state.token, body: { messageId: envelope.id, status: 'delivered' } }); } catch {}
+        if (state.selectedPeer?.secureId === envelope.senderSecureId) renderMessages();
+        else setStatus('New encrypted message received', 'ok');
+      }
+
+      els.createBtn.onclick = async () => {
+        try {
+          setStatus('Creating…');
+          const identity = createIdentity();
+          const username = els.username.value.trim().replace(/^@/, '') || undefined;
+          const proofSignature = signPayload(
+            registerProofPayload(identity.secureId, identity.identity.publicKey, identity.signing.publicKey),
+            identity.signing.secretKey,
+          );
+          const reg = await api('/identity/register', {
+            method: 'POST',
+            body: {
+              secureId: identity.secureId,
+              username,
+              identityPublicKey: identity.identity.publicKey,
+              signingPublicKey: identity.signing.publicKey,
+              proofSignature,
+            },
+          });
+          state.identity = identity;
+          state.token = reg.token;
+          els.idLine.textContent = identity.secureId + (username ? ' · @' + username : '');
+          connectWs();
+          await refreshFriends();
+          setStatus('Registered & online', 'ok');
+        } catch (e) {
+          setStatus(e.message, 'err');
+        }
+      };
+
+      els.addFriendBtn.onclick = async () => {
+        try {
+          if (!state.token) throw new Error('Create identity first');
+          const q = els.friendQuery.value.trim();
+          if (!q) return;
+          const found = await api('/identity/lookup?q=' + encodeURIComponent(q), { token: state.token });
+          await api('/friends/request', { method: 'POST', token: state.token, body: { toSecureId: found.identity.secureId } });
+          setStatus('Friend request sent to ' + (found.identity.username || found.identity.secureId), 'ok');
+          els.friendQuery.value = '';
+          await refreshFriends();
+        } catch (e) {
+          setStatus(e.message, 'err');
+        }
+      };
+
+      els.peerSelect.onchange = () => {
+        const id = els.peerSelect.value;
+        state.selectedPeer = state.friends.find((f) => f.friend.secureId === id)?.friend || null;
+        renderMessages();
+      };
+
+      els.sendBtn.onclick = async () => {
+        try {
+          if (!state.identity || !state.token) throw new Error('Create identity first');
+          if (!state.selectedPeer) throw new Error('Select a friend');
+          const text = els.msgInput.value.trim();
+          if (!text) return;
+          const peer = state.selectedPeer;
+          const conv = conversationIdFor(state.identity.secureId, peer.secureId);
+          const box = encryptMessage(text, peer.identityPublicKey, state.identity.identity.secretKey);
+          const id = uid();
+          const createdAt = new Date().toISOString();
+          const local = { id, plaintext: text, createdAt, status: 'sent', mine: true };
+          state.messages[conv] = [...(state.messages[conv] || []), local];
+          renderMessages();
+          els.msgInput.value = '';
+          const res = await api('/messages/send', {
+            method: 'POST',
+            token: state.token,
+            body: {
+              id,
+              conversationId: conv,
+              recipientSecureId: peer.secureId,
+              ciphertext: box.ciphertext,
+              nonce: box.nonce,
+              createdAt,
+            },
+          });
+          state.messages[conv] = state.messages[conv].map((m) => m.id === id ? { ...m, status: res.envelope.status } : m);
+          renderMessages();
+        } catch (e) {
+          setStatus(e.message, 'err');
+        }
+      };
+
+      els.msgInput.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') els.sendBtn.click();
+      });
+
+      return state;
+    }
+
+    makeDevice(document.getElementById('deviceA'), 'Virtual Device A', 'alice');
+    makeDevice(document.getElementById('deviceB'), 'Virtual Device B', 'bob');
+
+    document.getElementById('pingBtn').onclick = async () => {
+      try {
+        const h = await api('/health');
+        alert('API OK: ' + JSON.stringify(h));
+      } catch (e) {
+        alert('API failed: ' + e.message);
+      }
+    };
+  </script>
+</body>
+</html>

@@ -1,0 +1,15 @@
+node_modules/
+dist/
+.expo/
+*.sqlite
+*.sqlite-*
+apps/server/data/
+.DS_Store
+.env
+.env.*
+npm-debug.log*
+coverage/
+qa-emulator-*.png
+*.log
+.android/
+ios/Pods/
