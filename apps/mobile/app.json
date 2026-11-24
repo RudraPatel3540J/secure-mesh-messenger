@@ -1,0 +1,65 @@
+{
+  "expo": {
+    "name": "Secure Mesh Messenger",
+    "slug": "secure-mesh-messenger",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "dark",
+    "scheme": "smm",
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.securemesh.messenger",
+      "infoPlist": {
+        "NSLocationWhenInUseUsageDescription": "Secure Mesh Messenger uses location only when you choose to share it with trusted friends.",
+        "NSLocationAlwaysAndWhenInUseUsageDescription": "Background location is used only while live sharing is enabled.",
+        "NSCameraUsageDescription": "Camera is used to scan friend QR identity codes.",
+        "NSAppTransportSecurity": {
+          "NSAllowsLocalNetworking": true,
+          "NSAllowsArbitraryLoads": true
+        }
+      }
+    },
+    "android": {
+      "package": "com.securemesh.messenger",
+      "usesCleartextTraffic": true,
+      "adaptiveIcon": {
+        "backgroundColor": "#0B1220",
+        "foregroundImage": "./assets/android-icon-foreground.png",
+        "backgroundImage": "./assets/android-icon-background.png",
+        "monochromeImage": "./assets/android-icon-monochrome.png"
+      },
+      "permissions": [
+        "ACCESS_COARSE_LOCATION",
+        "ACCESS_FINE_LOCATION",
+        "INTERNET",
+        "ACCESS_NETWORK_STATE",
+        "READ_MEDIA_IMAGES",
+        "READ_MEDIA_VIDEO",
+        "READ_EXTERNAL_STORAGE",
+        "CAMERA"
+      ],
+      "predictiveBackGestureEnabled": false
+    },
+    "web": {
+      "favicon": "./assets/favicon.png"
+    },
+    "plugins": [
+      "expo-secure-store",
+      [
+        "expo-location",
+        {
+          "locationWhenInUsePermission": "Allow Secure Mesh Messenger to use your location for optional encrypted live sharing."
+        }
+      ],
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "Allow Secure Mesh Messenger to attach photos and videos to encrypted chats.",
+          "cameraPermission": "Allow Secure Mesh Messenger to capture photos for encrypted chats."
+        }
+      ],
+      "expo-sharing"
+    ]
+  }
+}
